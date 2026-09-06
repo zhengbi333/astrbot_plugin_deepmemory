@@ -14,6 +14,30 @@
 - 兼容：AstrBot `>= 4.22.0`
 - 编码：UTF-8
 
+## 安装
+
+**方式一：本地放置**（推荐）
+
+1. 将整个插件目录（**目录名保持 `astrbot_plugin_deepmemory` 不变**）放入 AstrBot 插件目录：
+   ```text
+   <astrbot_data>/data/plugins/astrbot_plugin_deepmemory
+   ```
+   常见路径示例：`<astrbot 安装目录>/data/plugins/astrbot_plugin_deepmemory`
+2. 打开 AstrBot 管理面板 →「插件」→ 找到「为你篆刻的历史」→ **启用 / 重载**；
+3. 在插件管理页配置 `_conf_schema.json` 中的项（也可在插件 WebUI「设置」页调整，全部自动保存）。
+
+**方式二：Git 安装**：AstrBot 插件市场支持通过 Git 仓库安装，直接添加：
+
+```text
+https://github.com/xiaoxue00123/astrbot_plugin_deepmemory
+```
+
+**快速开始**：
+- 保持 `capture.enabled`、`summary.enabled`、`injection.enabled` 为开（群聊捕获默认 `off`，需要群聊记忆时改为 `related`/`all`）；
+- 给 `summary.provider_id` 配置总结用 LLM（留空则用当前会话模型）；
+- 初期 `retrieval.embedding_enabled` 可关闭，记忆变多后再配置 Embedding Provider 开启；
+- 打开 WebUI → 插件 → 深忆，进入仪表盘。
+
 ## 核心能力
 
 - **混合检索**：SQLite FTS5（trigram，中文子串友好）+ 可选 Embedding 语义召回 + 可选 Rerank 二阶段重排；关键词/语义/重排权重与阈值全部可配。
