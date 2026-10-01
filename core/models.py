@@ -148,7 +148,14 @@ class SessionContext:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "SessionContext":
-        payload = payload or {}
+        payload = dict(payload or {})
+        from .identity import normalize_session_fields
+
+        payload.update(normalize_session_fields(
+            session_id=payload.get("session_id", ""), scope=payload.get("scope", ""),
+            platform=payload.get("platform", ""), user_id=payload.get("user_id", ""),
+            group_id=payload.get("group_id", ""),
+        ))
         return cls(
             session_id=clean_text(payload.get("session_id"), 200),
             scope=clean_text(payload.get("scope"), 40).lower() or "unknown",

@@ -290,31 +290,24 @@ class RerankClient:
                     break
             else:
                 return None
-        if isinstance(payload, (list, tuple)):
-            scores: list[float] = []
-            for item in payload[:expected]:
-                if isinstance(item, dict):
-                    if "relevance_score" in item:
-                        try:
-                            scores.append(float(item["relevance_score"]))
-                            continue
-                        except Exception:
-                            pass
-                    if "score" in item:
-                        try:
-                            scores.append(float(item["score"]))
-                            continue
-                        except Exception:
-                            pass
-                    return None
-                try:
-                    scores.append(float(item))
-                except Exception:
-                    return None
-            if len(scores) != expected:
+        if not isinstance(payload, (list, tuple)) or len(payload) != expected:
+            return None
+        scores = [None] * expected
+        indexed = any(isinstance(item, dict) and "index" in item for item in payload)
+        if indexed and not all(isinstance(item, dict) and "index" in item for item in payload):
+            return None
+        for position, item in enumerate(payload):
+            try:
+                index = int(item["index"]) if indexed else position
+                value = item.get("relevance_score", item.get("score")) if isinstance(item, dict) else item
+                score = float(value)
+            except (ValueError, TypeError, KeyError):
                 return None
-            return scores
-        return None
+            if not 0 <= index < expected or scores[index] is not None or not math.isfinite(score):
+                return None
+            scores[index] = score
+        return scores if all(score is not None for score in scores) else None
+
 
 
 def visibility_filter(record: MemoryRecord, ctx: SessionContext, config: ConfigView) -> tuple[bool, str]:
@@ -322,7 +315,7 @@ def visibility_filter(record: MemoryRecord, ctx: SessionContext, config: ConfigV
     if record.lifecycle != "active":
         return False, "lifecycle_not_active"
     if record.persona_id and config.bool("isolation.persona_isolation_enabled", True):
-        if ctx.persona_id and record.persona_id != ctx.persona_id:
+        if record.persona_id != ctx.persona_id:
             return False, "persona_mismatch"
     min_confidence = config.float("weights.min_confidence", 0.1)
     if record.confidence < min_confidence:
@@ -335,7 +328,9 @@ def visibility_filter(record: MemoryRecord, ctx: SessionContext, config: ConfigV
         if config.bool("isolation.user_isolation_enabled", True) and ctx.scope != "private":
             return False, "private_not_visible_from_group"
         if not ctx.user_id:
-            return True, ""
+            return False, "missing_user"
+        if not record.user_id and record.session_id and record.session_id != ctx.session_id:
+            return False, "session_mismatch"
         if record.user_id and record.user_id != ctx.user_id:
             if config.bool("isolation.cross_user_visible", False):
                 return True, ""
@@ -345,7 +340,9 @@ def visibility_filter(record: MemoryRecord, ctx: SessionContext, config: ConfigV
         if config.bool("isolation.group_isolation_enabled", True) and ctx.scope != "group":
             return False, "group_not_visible_from_private"
         if not ctx.group_id:
-            return True, ""
+            return False, "missing_group"
+        if not record.group_id and record.session_id and record.session_id != ctx.session_id:
+            return False, "session_mismatch"
         if record.group_id and record.group_id != ctx.group_id:
             if config.bool("isolation.cross_group_visible", False):
                 return True, ""
@@ -449,6 +446,8 @@ class RetrievalEngine:
                     limit = pool_limit
                     scored_vectors: list[tuple[MemoryRecord, float]] = []
                     for record, vector in stored[:limit]:
+                        if not admin_read_all and not visibility_filter(record, ctx, self.config)[0]:
+                            continue
                         if len(vector) != len(query_vector):
                             continue
                         sim = _cosine_similarity(query_vector, vector)

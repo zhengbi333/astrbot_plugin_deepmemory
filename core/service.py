@@ -74,7 +74,7 @@ _SYSTEM_NOTICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-PLUGIN_VERSION = "alpha-0.81"
+PLUGIN_VERSION = "alpha-0.82"
 PLUGIN_DISPLAY_NAME = "为你篆刻的历史"
 
 INJECTION_BLOCK_RE = re.compile(
@@ -188,6 +188,7 @@ class DeepMemoryService:
         self._load_runtime_overrides(force=True)
         self.config = ConfigView(self._raw_config)
         self.identity = IdentityResolver()
+        self._session_personas: dict[str, str] = {}
         self.store = MemoryStore(data_dir / "deepmemory.db")
         self.token_store = DeepMemoryTokenStore(data_dir)
         self.retrieval = RetrievalEngine(
@@ -494,11 +495,13 @@ class DeepMemoryService:
         """
         if not self.config.bool("isolation.persona_isolation_enabled", True):
             ctx.persona_id = "default"
+            self._session_personas[ctx.session_id] = "default"
             return "default"
         persona_id = await self._astr_persona_id(ctx)
         if not persona_id:
             persona_id = "default"
         ctx.persona_id = persona_id
+        self._session_personas[ctx.session_id] = persona_id
         return persona_id
 
     async def _astr_persona_id(self, ctx: SessionContext) -> str:

@@ -183,15 +183,23 @@ class DeepMemoryBridge:
     ) -> list[dict[str, Any]]:
         """按会话/用户返回最近记忆（不带检索词）。"""
         ctx = session_context if isinstance(session_context, SessionContext) else SessionContext.from_dict(session_context)
+        if ctx.session_id and not ctx.persona_id:
+            ctx.persona_id = getattr(self._service, "_session_personas", {}).get(ctx.session_id, "")
         records = self._service.store.list_memories(
             limit=limit,
             session_id=(ctx.session_id if ctx else "") or "",
-            user_id=(ctx.user_id if ctx else "") or "",
+            user_id=(ctx.user_id if ctx and ctx.scope != "group" else "") or "",
+            group_id=(ctx.group_id if ctx and ctx.scope == "group" else "") or "",
+            persona_id=(ctx.persona_id if ctx else "") or "",
             scope=(ctx.scope if ctx and ctx.scope != "unknown" else "") or "",
             memory_type=memory_type,
             lifecycle=lifecycle,
             order_by="occurred_at DESC",
         )
+        # 空上下文仅供后台管理素材；聊天调用方必须传入已解析的会话与人格。
+        if ctx.session_id or ctx.user_id or ctx.group_id:
+            from .retrieval import visibility_filter
+            records = [record for record in records if visibility_filter(record, ctx, self._service.config)[0]]
         return [record.to_dict() for record in records]
 
     async def resolve_persona_for(self, session_context: SessionContext | dict[str, Any]) -> str:
@@ -208,6 +216,13 @@ class DeepMemoryBridge:
     ) -> list[dict[str, Any]]:
         """返回最近时间线事件（供陪伴插件读取会话上下文）。"""
         ctx = session_context if isinstance(session_context, SessionContext) else SessionContext.from_dict(session_context)
+        # 空上下文保留管理面板全量视图；仅有用户 ID 不允许退化为全库读取。
+        if not ctx.session_id and (ctx.user_id or ctx.group_id):
+            return []
+        if ctx.session_id and not ctx.persona_id:
+            ctx.persona_id = getattr(self._service, "_session_personas", {}).get(ctx.session_id, "")
+        if ctx.session_id and self._service.config.bool("isolation.persona_isolation_enabled", True) and not ctx.persona_id:
+            return []
         events = self._service.store.recent_timeline(
             limit=limit,
             session_id=(ctx.session_id if ctx else "") or "",
