@@ -475,6 +475,12 @@ class RetrievalEngine:
             use_rerank = True
         if use_rerank and results:
             candidate_limit = max(1, self.config.int("retrieval.rerank_candidate_limit", 32))
+            # 0.86：rerank_candidate_multiplier（"重排候选倍率"，默认 5）此前是**死配置**——
+            # 代码只用固定的 rerank_candidate_limit，倍率无人读取。这里让它真正生效：
+            # 候选数 = top_k × 倍率，并以 rerank_candidate_limit 为**上限**（两个配置各司其职）。
+            # 注：mode=auto 且未启用向量、或 rerank 模型未配时，本段不会执行，故对现有行为零影响。
+            multiplier = max(1, self.config.int("retrieval.rerank_candidate_multiplier", 5))
+            candidate_limit = max(1, min(candidate_limit, max(1, top_k) * multiplier))
             top_candidates = results[:candidate_limit]
             documents = [r.memory.content for r in top_candidates]
             scores = await self.rerank.rerank(query, documents)

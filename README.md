@@ -10,7 +10,7 @@
 
 - 插件名：`astrbot_plugin_deepmemory`
 - 中文名：为你篆刻的历史
-- 版本：`alpha-0.85`
+- 版本：`alpha-0.86`
 - 兼容：AstrBot `>= 4.22.0`
 - 编码：UTF-8
 
