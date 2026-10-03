@@ -1060,8 +1060,13 @@ class MemoryStore:
             return 0
         with self._lock:
             cur = self._conn.execute(
+                # 0.89 修复：两侧都必须 CAST 成 INTEGER。
+                # strftime() 返回 **TEXT**，而 `strftime('%s','now') - ?` 是**数字**；
+                # SQLite 的类型排序里数字恒小于文本 → `TEXT <= INTEGER` **永远为假**，
+                # 于是这条"保留策略"从未删掉任何一行（实测：90 天前的已总结记录删不掉）。
                 "DELETE FROM timeline WHERE summarized=1 "
-                "AND strftime('%s', occurred_at) <= strftime('%s', 'now') - ?",
+                "AND CAST(strftime('%s', occurred_at) AS INTEGER) "
+                "<= CAST(strftime('%s', 'now') AS INTEGER) - ?",
                 (days * 86400,),
             )
             self._conn.commit()
@@ -1215,7 +1220,9 @@ class MemoryStore:
             return 0
         with self._lock:
             cur = self._conn.execute(
-                "DELETE FROM injection_logs WHERE strftime('%s', created_at) <= strftime('%s', 'now') - ?",
+                # 0.89 修复：同上——两侧 CAST 成 INTEGER，否则 TEXT <= INTEGER 恒为假，日志永不清理。
+            "DELETE FROM injection_logs WHERE CAST(strftime('%s', created_at) AS INTEGER) "
+            "<= CAST(strftime('%s', 'now') AS INTEGER) - ?",
                 (days * 86400,),
             )
             self._conn.commit()

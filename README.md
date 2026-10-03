@@ -4,7 +4,7 @@
 
 - 插件名：`astrbot_plugin_deepmemory`
 - 中文名：`为你篆刻的历史`
-- 版本：`alpha-0.88`
+- 版本：`alpha-0.89`
 - AstrBot 版本：`>= 4.22.0`
 - 编码要求：UTF-8
 - 更新日志：见 [changelogs/](changelogs/)（每个版本一个 Markdown 文件）
