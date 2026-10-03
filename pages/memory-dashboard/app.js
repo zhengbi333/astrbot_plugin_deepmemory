@@ -618,35 +618,6 @@ async function renderDebug() {
     }
   });
 
-  $("#sum-test-btn").addEventListener("click", async () => {
-    const box = $("#sum-test-result");
-    box.innerHTML = '<div class="loading">测试中（可能等待模型响应，请稍候）…</div>';
-    try {
-      const data = await apiPost("summary/test");
-      const cfg = data.config || {};
-      const results = data.results || [];
-      box.innerHTML = `
-        <div class="text-3" style="font-size:12px;margin-top:8px">
-          配置：主 ${esc(cfg.provider_id || "（未配置，使用当前会话模型）")}
-          · 备 ${esc(cfg.fallback_provider_id || "（无）")}
-          · 超时 ${cfg.timeout_seconds}s · 流式优先
-        </div>
-        ${results.map((r) => `
-          <div class="card" style="margin-top:10px;margin-bottom:0;padding:12px 14px">
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
-              <span class="badge ${r.ok ? "green" : "red"}">${r.ok ? "成功" : "失败"}</span>
-              <span class="badge soft">${esc(r.source)}</span>
-              <span class="badge">${esc(r.provider)}</span>
-              ${r.elapsed_ms != null ? `<span class="text-3 mono" style="font-size:11px">${r.elapsed_ms} ms</span>` : ""}
-              ${r.sdk_timeout != null ? `<span class="text-3 mono" style="font-size:11px">SDK 超时 ${esc(String(r.sdk_timeout))}</span>` : ""}
-            </div>
-            <div class="text-2" style="font-size:12.5px;word-break:break-all">${r.ok ? esc(r.output) : esc(r.error || "未知错误")}</div>
-          </div>`).join("") || '<div class="empty">没有可用 Provider（检查 summary.provider_id 配置）</div>'}`;
-    } catch (err) {
-      box.innerHTML = `<div class="empty">测试失败：${esc(err.message || "未知错误")}</div>`;
-    }
-  });
-
   const renderPersona = async () => {
     const box = $("#persona-box");
     try {

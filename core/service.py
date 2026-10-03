@@ -74,7 +74,7 @@ _SYSTEM_NOTICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-PLUGIN_VERSION = "alpha-0.89"
+PLUGIN_VERSION = "alpha-0.90"
 PLUGIN_DISPLAY_NAME = "为你篆刻的历史"
 
 INJECTION_BLOCK_RE = re.compile(
@@ -199,6 +199,7 @@ class DeepMemoryService:
         self._embed_backfill_task: asyncio.Task | None = None
         self._maintenance_task: asyncio.Task | None = None
         self._summary_scan_task: asyncio.Task | None = None
+        self._summary_settle_tasks: dict[str, asyncio.Task] = {}
         self._bg_tasks: set[asyncio.Task] = set()
         self._embedding_provider_cache: tuple[Any, str] | None = None
         self._last_maintenance_at = ""
@@ -445,6 +446,10 @@ class DeepMemoryService:
 
     async def _scan_ready_sessions(self) -> None:
         """按会话分组检查未总结进度，达标会话触发后台总结（与消息路径共用 inflight 防重）。"""
+        if not self.config.bool("general.enabled", True) or not self.config.bool("summary.enabled", True):
+            return
+        if not self.config.bool("summary.summarize_on_bot_idle", True):
+            return
         events = self.store.unsummarized_timeline(limit=3000)
         by_session: dict[tuple[str, str, str], list] = {}
         for item in events:
@@ -456,9 +461,11 @@ class DeepMemoryService:
         interval_minutes = self.config.int("summary.trigger_interval_minutes", 90)
         for (persona_id, scope, session_id), session_events in by_session.items():
             is_group = scope == "group"
+            if is_group and not self.config.bool("summary.group_enabled", False):
+                continue
             count = len(session_events) if is_group else self._count_rounds(session_events)
             threshold = group_trigger if is_group else trigger
-            # 0.81 轮完整性守卫（仅私聊）：不拆半轮（最后一段必须 bot 且距最后事件 ≥2 秒）
+            # 0.81 轮完整性守卫（仅私聊）：不拆半轮（最后一段必须 bot 且距最后事件 ≥5 秒）
             if count >= threshold:
                 if is_group or self._session_rounds_ready(session_events):
                     self._spawn_summary_if_free(session_id, scope, persona_id)
@@ -477,11 +484,9 @@ class DeepMemoryService:
         session_key = f"{persona_id}|{scope}|{session_id}"
         if self._inflight_has(session_key):
             return
-        ctx = SessionContext(
-            session_id=session_id,
-            scope=scope,
-            persona_id=persona_id,
-        )
+        ctx = SessionContext.from_dict({
+            "session_id": session_id, "scope": scope, "persona_id": persona_id,
+        })
         self._inflight_add(session_key)
         self._spawn(self._summarize_task(ctx, session_key), "summary")
 
@@ -1482,7 +1487,24 @@ class DeepMemoryService:
         )
         self.store.add_timeline_event(event)
         if trigger_summary:
+            # 新用户发言会撤销旧轮的安静计时，机器人拆条逐次重置。
+            key = f"{ctx.persona_id}|{ctx.scope}|{ctx.session_id}"
+            previous = self._summary_settle_tasks.pop(key, None)
+            if previous is not None:
+                previous.cancel()
             await self.maybe_summarize_session(ctx)
+            if role == "bot" and self.config.bool("general.enabled", True) and self.config.bool("summary.enabled", True):
+                self._summary_settle_tasks[key] = self._spawn(self._settle_summary(ctx, key), "summary_settle")
+
+    async def _settle_summary(self, ctx: SessionContext, key: str) -> None:
+        """等机器人拆条回复收齐后重检消息阈值，不依赖空闲扫描开关。"""
+        try:
+            await asyncio.sleep(5)
+            if self.config.bool("general.enabled", True):
+                await self.maybe_summarize_session(ctx)
+        finally:
+            if self._summary_settle_tasks.get(key) is asyncio.current_task():
+                self._summary_settle_tasks.pop(key, None)
 
     def _looks_command(self, text: str) -> bool:
         from .identity import looks_like_command
@@ -1518,12 +1540,12 @@ class DeepMemoryService:
     # ================================================================== summary
 
     def _session_rounds_ready(self, events: list[Any]) -> bool:
-        """0.81 轮完整性守卫：最后一段必须是 bot（本轮有回应）且距最后事件 ≥2 秒。
+        """0.81 轮完整性守卫：最后一段必须是 bot（本轮有回应）且距最后事件 ≥5 秒。
 
         后台扫描拍点可能在"用户刚说完、bot 回复还没进来"的瞬间触发总结，
         把半轮（只剩 user）当成完整轮总结掉——随后 bot 回复就成了没被总结的尾巴
         （用户实测:第三轮 user 被总结但 bot 两条待总结，且计数变成 bot-only 的 1/3）。
-        缓冲拆条发送的 bot 尾巴间隔 0.8~4s，2 秒守卫可收齐大部分；剩下的由"最后一段必须
+        缓冲拆条发送的 bot 尾巴间隔 0.8~4s，5 秒守卫覆盖当前拆条间隔；剩下的由"最后一段必须
         是 bot"兜底（下一拍若最后事件仍是 user 则不触发，不会把半轮拆掉）。
         """
         if not events:
@@ -1535,7 +1557,7 @@ class DeepMemoryService:
             ts = getattr(last, "occurred_at", "") or ""
             if ts:
                 t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                if (datetime.now(timezone.utc) - t).total_seconds() < 2.0:
+                if (datetime.now(timezone.utc) - t).total_seconds() < 5.0:
                     return False
         except Exception:
             pass
@@ -1572,7 +1594,7 @@ class DeepMemoryService:
         interval_minutes = self.config.int("summary.trigger_interval_minutes", 90)
         triggered = force or count >= trigger_rounds
         if not triggered and interval_minutes > 0 and count >= min_rounds:
-            earliest = self.store.earliest_unsummarized_at(session_id=ctx.session_id)
+            earliest = events[0].occurred_at if events else ""
             if earliest:
                 try:
                     earliest_dt = datetime.fromisoformat(earliest.replace("Z", "+00:00"))
@@ -1580,7 +1602,7 @@ class DeepMemoryService:
                         triggered = True
                 except Exception:
                     triggered = False
-        # 0.81 轮完整性（仅私聊）：不拆半轮（最后一段必须是 bot 且距最后事件 ≥2 秒）；
+        # 0.81 轮完整性（仅私聊）：不拆半轮（最后一段必须是 bot 且距最后事件 ≥5 秒）；
         # 群聊按事件数触发、没有 user/bot 配对概念，不套守卫
         if triggered and not force and not is_group and not self._session_rounds_ready(events):
             return False
@@ -1653,7 +1675,7 @@ class DeepMemoryService:
 
     async def _summarize_task(self, ctx: SessionContext, session_key: str) -> None:
         try:
-            await self._summarize_session_inner(ctx)
+            await self._summarize_session_inner(ctx, require_complete=True)
         except Exception as exc:
             logger.warning("[DeepMemory] 阶段总结失败: session=%s error=%s", ctx.session_id, exc, exc_info=True)
         finally:
@@ -1740,20 +1762,44 @@ class DeepMemoryService:
             last_speaker = speaker
         return "\n".join(lines), max(1, round_no)
 
-    async def _summarize_session_inner(self, ctx: SessionContext) -> dict[str, Any]:
+    def _summary_batch(self, events: list[Any], ctx: SessionContext, *, require_complete: bool = False) -> list[Any]:
+        """按完整事件及私聊轮边界控制预算，未展示事件继续留在待总结队列。"""
+        event_limit = max(1, self.config.int("summary.max_events_per_summary", 30))
+        char_limit = max(1, self.config.int("summary.max_input_chars", 6000))
+        selected = []
+        boundary = []
+        for index, event in enumerate(events):
+            trial = selected + [event]
+            text, _ = self._compose_events_text(trial, user_name=ctx.user_name or "对方", bot_name=ctx.bot_name or "我")
+            if len(trial) > event_limit or len(text) > char_limit:
+                break
+            selected = trial
+            if not require_complete or ctx.scope == "group":
+                boundary = list(selected)
+            elif event.role == "bot" and (index + 1 == len(events) or events[index + 1].role != "bot"):
+                boundary = list(selected)
+        return boundary
+
+    async def _summarize_session_inner(self, ctx: SessionContext, *, require_complete: bool = False) -> dict[str, Any]:
         events = self.store.unsummarized_timeline(
             session_id=ctx.session_id,
             persona_id=ctx.persona_id,
-            limit=max(1, self.config.int("summary.max_events_per_summary", 30)),
+            limit=max(2, self.config.int("summary.max_events_per_summary", 30) + 1),
         )
         if not events:
             return {"ok": False, "reason": "no_events"}
+        events = self._summary_batch(events, ctx, require_complete=require_complete)
+        if not events:
+            return {"ok": False, "reason": "incomplete_round_or_input_budget"}
+        # 后台扫描的 ctx 可能只有会话键；身份沿用本批实际消息，保持写入可见性。
+        for field in ("platform", "user_id", "user_name", "group_id", "group_name", "bot_id"):
+            if not getattr(ctx, field, ""):
+                value = next((getattr(event, field, "") for event in events if getattr(event, field, "")), "")
+                setattr(ctx, field, value)
         user_name = ctx.user_name or "对方"
         bot_name = ctx.bot_name or "我"
         text, round_no = self._compose_events_text(events, user_name=user_name, bot_name=bot_name)
-        max_input = self.config.int("summary.max_input_chars", 6000)
-        if len(text) > max_input:
-            text = text[:max_input] + "\n…(截断)"
+        # _summary_batch 已按完整事件限制输入，禁止把未展示的事件标记为已总结。
         persona_text = await self._conversation_prompt_text(ctx)
         persona_hint = PERSONA_HINT_RULE.format(persona=persona_text) if persona_text else ""
         payload = await self._llm_json(
@@ -1826,6 +1872,7 @@ class DeepMemoryService:
             source="summary",
             metadata={"source_session": ctx.session_id, "trigger": "timeline_summary", "event_count": len(events), "rounds": round_no},
         )
+        record.ensure_defaults()
         created.append(record.id)
         # 指纹去重：与库内同人格、同指纹记忆合并，避免每次总结都堆积重复关系
         duplicate = self.store.find_duplicate(record)
@@ -1867,7 +1914,7 @@ class DeepMemoryService:
         attempts = await self._provider_attempts(
             ctx,
             prefix=prefix,
-            provider_key="provider_id",
+            provider_key="decay_provider_id" if prefix == "decay" else "provider_id",
             fallback_provider_key=fallback_key,
             include_current=True,
         )
@@ -2123,7 +2170,9 @@ class DeepMemoryService:
         seen_objects: set[int] = set()
         configured = [
             ("primary", clean_text(self.config.get(f"{prefix}.{provider_key}", ""), 120)),
-            ("fallback", clean_text(self.config.get(f"{prefix}.{fallback_provider_key}", ""), 120)),
+            ("fallback", clean_text(self.config.get(
+                fallback_provider_key if "." in fallback_provider_key else f"{prefix}.{fallback_provider_key}", ""
+            ), 120)),
         ]
         for source, provider_id in configured:
             if not provider_id or provider_id in seen_ids:
@@ -2976,7 +3025,6 @@ class DeepMemoryService:
                 examples.append(f"{record.id}: {old_importance:.4f} → {new_importance:.4f}（{days}天）")
             if new_importance < threshold:
                 candidates.append(record)
-                continue
             self.store.update_memory_fields(
                 record.id,
                 importance=new_importance,
@@ -2984,15 +3032,15 @@ class DeepMemoryService:
                 metadata=metadata,
             )
         mode = clean_text(self.config.get("decay.decay_mode", "archive"), 20) or "archive"
-        if mode == "delete":
+        archived = len(candidates)
+        if mode == "compress":
+            # 压缩失败仍保留活跃原文；不能先归档再等待老记忆扫描来压缩。
+            report = await self.run_decay(candidates=candidates)
+            archived = int(report.get("processed") or 0)
+        elif mode == "delete":
             self.store.decay_records(mode="delete", memory_ids=[c.id for c in candidates])
         else:
-            # compress 模式简化为归档（深层压缩由 run_decay 的候选流程处理）
-            self.store.decay_records(
-                mode="archive",
-                memory_ids=[c.id for c in candidates],
-                summary_memory_id="",
-            )
+            self.store.decay_records(mode="archive", memory_ids=[c.id for c in candidates], summary_memory_id="")
         logger.info(
             "[DeepMemory] 每日减权完成: rate=%s%%/天 处理=%s 归档判定=%s mode=%s 示例=%s",
             round(rate * 100, 2), processed, len(candidates), mode,
@@ -3001,16 +3049,16 @@ class DeepMemoryService:
         return {
             "ok": True,
             "processed": processed,
-            "archived": len(candidates),
+            "archived": archived,
             "mode": mode,
             "rate_percent": round(rate * 100, 2),
             "threshold": threshold,
         }
 
-    async def run_decay(self) -> dict[str, Any]:
+    async def run_decay(self, *, candidates: list[MemoryRecord] | None = None) -> dict[str, Any]:
         if not self.config.bool("decay.enabled", True):
             return {"ok": False, "reason": "decay disabled", "processed": 0}
-        candidates = self.store.list_decay_candidates(
+        candidates = candidates if candidates is not None else self.store.list_decay_candidates(
             after_days=max(1, self.config.int("decay.decay_after_days", 120)),
             idle_days=max(1, self.config.int("decay.decay_idle_days", 60)),
             max_importance=self.config.float("decay.decay_max_importance", 0.7),
@@ -3032,7 +3080,9 @@ class DeepMemoryService:
             groups.setdefault(key, []).append(record)
         processed = 0
         for group in groups.values():
-            summary_text = "\n".join(f"- {record.content[:300]}" for record in group[:12])
+            # 每次只消费展示给压缩模型的十二条，剩余候选下次维护再处理。
+            group = group[:12]
+            summary_text = "\n".join(f"- {record.content}" for record in group)
             prompt = DECAY_PROMPT_TEMPLATE.format(items=summary_text)
             ctx = SessionContext(
                 session_id=group[0].session_id,
@@ -3046,10 +3096,14 @@ class DeepMemoryService:
             )
             payload = await self._llm_json(prompt, ctx=ctx, prefix="decay", fallback_prefix="summary")
             new_memory_id = ""
+            content = clean_text(payload.get("content"), self.config.int("decay.decay_summary_chars", 800)) if isinstance(payload, dict) else ""
+            if not content:
+                logger.warning("[DeepMemory] 压缩失败，保留原有活跃记忆: session=%s count=%s", ctx.session_id, len(group))
+                continue
             if isinstance(payload, dict):
                 record = MemoryRecord(
                     memory_type=clean_text(payload.get("memory_type"), 60) or "summary",
-                    content=clean_text(payload.get("content"), self.config.int("decay.decay_summary_chars", 800)),
+                    content=content,
                     summary=clean_text(payload.get("summary"), 400),
                     tags=[clean_text(tag, 80) for tag in (payload.get("tags") or []) if clean_text(tag, 80)],
                     importance=clamp_float(payload.get("importance"), default=0.5),

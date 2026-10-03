@@ -1,7 +1,7 @@
 name: astrbot_plugin_deepmemory
 display_name: 为你篆刻的历史
 author: 证毕＆deepseek
-version: alpha-0.89
+version: alpha-0.90
 description: 为你篆刻的历史：面向 AstrBot 的长期记忆中枢，记忆分区与用户双层隔离、混合检索（关键词 + Embedding + Rerank）、记忆权重、自然衰减、批量导入导出、手动记忆增删改与 WebUI 仪表盘。
 desc: 长期记忆中枢。支持按记忆分区与按用户隔离记忆、记忆权重与自然衰减、Embedding/Rerank 混合召回、LLM 阶段总结、批量导入导出、手动记忆管理与可配置 WebUI 仪表盘，并为陪伴插件预留公共桥接接口。
 repo: https://github.com/zhengbi333/astrbot_plugin_deepmemory
