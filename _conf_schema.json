@@ -572,7 +572,7 @@
       "decay_provider_id": {
         "description": "衰减压缩模型",
         "_special": "select_provider",
-        "hint": "compress 模式使用的 LLM 提供商；留空使用总结模型/当前会话模型。",
+        "hint": "（当前实现未读取此项：compress 模式固定使用「总结模型 / 当前会话模型」来压缩，在这里指定别的模型不会生效；全仓检索不到对 decay.decay_provider_id 的读取，changelog 里也没有相关实现，此项留作后续实现。archive / delete 模式本就不需要模型。）",
         "type": "string",
         "default": ""
       },
