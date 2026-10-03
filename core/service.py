@@ -74,7 +74,7 @@ _SYSTEM_NOTICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-PLUGIN_VERSION = "alpha-0.83"
+PLUGIN_VERSION = "alpha-0.84"
 PLUGIN_DISPLAY_NAME = "为你篆刻的历史"
 
 INJECTION_BLOCK_RE = re.compile(
@@ -1696,6 +1696,50 @@ class DeepMemoryService:
             logger.debug("[DeepMemory] 读取会话提示词失败: %s", exc)
             return ""
 
+    def _compose_events_text(
+        self, events: list[Any], *, user_name: str, bot_name: str
+    ) -> tuple[str, int]:
+        """把待提炼的时间线事件拼成给模型看的对话文本，返回 (文本, 轮数)。
+
+        0.84：**同一位说话人的连续消息合并成一行**。机器人是拆条发送的——"嗯。""晚上好。"
+        "刚在看窗外。"其实是同一轮里的三句，之前被记成三行，提炼时看着像三次独立发言，
+        既啰嗦又容易把一轮的事拆碎。合并后一轮就是一行，模型看到的更像真实对话。
+        - 只合并**相邻且同一位说话人**（群聊里不同人挨着说话不会被并在一起）
+        - 开关：`summary.merge_consecutive`（默认开）；关闭则保持一行一条（旧行为）
+        """
+        merge = self.config.bool("summary.merge_consecutive", True)
+        lines: list[str] = []
+        prev_side: str | None = None
+        last_speaker = ""
+        round_no = 0
+        for event in events:
+            side = "bot" if event.role == "bot" else "user"
+            if side == "user" and side != prev_side:
+                round_no += 1
+            if side == "bot":
+                speaker = bot_name
+            else:
+                # 群聊多人：优先使用事件记录的具体发言人（昵称或 ID），避免混淆
+                speaker = event.user_name or event.user_id or user_name
+            content = str(event.content or "").strip()
+            if not content:
+                prev_side = side
+                continue
+            if merge and lines and speaker == last_speaker and side == prev_side:
+                joined = lines[-1]
+                tail = joined.rstrip()
+                # 中文直接续上即可；若上一句没有收尾标点，补一个空格避免粘成一个词
+                if tail and tail[-1] not in "。！？!?…~,，、；;：:\"'）)":
+                    joined = f"{tail} {content}"
+                else:
+                    joined = f"{tail}{content}"
+                lines[-1] = joined
+            else:
+                lines.append(f"[第{round_no}轮] {speaker}: {content}")
+            prev_side = side
+            last_speaker = speaker
+        return "\n".join(lines), max(1, round_no)
+
     async def _summarize_session_inner(self, ctx: SessionContext) -> dict[str, Any]:
         events = self.store.unsummarized_timeline(
             session_id=ctx.session_id,
@@ -1706,21 +1750,7 @@ class DeepMemoryService:
             return {"ok": False, "reason": "no_events"}
         user_name = ctx.user_name or "对方"
         bot_name = ctx.bot_name or "我"
-        lines: list[str] = []
-        prev_side: str | None = None
-        round_no = 0
-        for event in events:
-            side = "bot" if event.role == "bot" else "user"
-            if side == "user" and side != prev_side:
-                round_no += 1
-            prev_side = side
-            if side == "bot":
-                speaker = bot_name
-            else:
-                # 群聊多人：优先使用事件记录的具体发言人（昵称或 ID），避免混淆
-                speaker = event.user_name or event.user_id or user_name
-            lines.append(f"[第{round_no}轮] {speaker}: {event.content}")
-        text = "\n".join(lines)
+        text, round_no = self._compose_events_text(events, user_name=user_name, bot_name=bot_name)
         max_input = self.config.int("summary.max_input_chars", 6000)
         if len(text) > max_input:
             text = text[:max_input] + "\n…(截断)"

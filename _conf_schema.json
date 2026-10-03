@@ -176,6 +176,12 @@
         "type": "int",
         "default": 30
       },
+      "merge_consecutive": {
+        "description": "合并同一人的连续消息",
+        "type": "bool",
+        "default": true,
+        "hint": "机器人是拆条发送的（一句话分成几条），开启后提炼时会把同一人相邻的几条并成一行，读起来更像真实对话、也更省；关闭则一条一行（旧行为）。"
+      },
       "max_input_chars": {
         "description": "总结输入字数",
         "hint": "单次总结最多发送给模型的时间线字符数。",
