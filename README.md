@@ -1,4 +1,4 @@
-# 为你篆刻的历史（astrbot_plugin_deepmemory）
+﻿# 为你篆刻的历史（astrbot_plugin_deepmemory）
 
 > **本插件由 AI 制作**（DeepSeek 与 DSH 协同开发，作者署名：证毕＆deepseek）。
 >
@@ -10,7 +10,7 @@
 
 - 插件名：`astrbot_plugin_deepmemory`
 - 中文名：为你篆刻的历史
-- 版本：`alpha-0.82`
+- 版本：`alpha-0.83`
 - 兼容：AstrBot `>= 4.22.0`
 - 编码：UTF-8
 

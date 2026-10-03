@@ -74,7 +74,7 @@ _SYSTEM_NOTICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-PLUGIN_VERSION = "alpha-0.82"
+PLUGIN_VERSION = "alpha-0.83"
 PLUGIN_DISPLAY_NAME = "为你篆刻的历史"
 
 INJECTION_BLOCK_RE = re.compile(
@@ -596,6 +596,11 @@ class DeepMemoryService:
         """检测 AstrBot 清空上下文指令（/reset 等），同步清空当前会话的未总结缓存。
 
         返回是否命中指令。
+
+        0.83：清空**之前**先把还没提炼的对话落成记忆——清空上下文是"别引用刚才那些话"，
+        不等于"把这段时间发生的事全忘掉"。以前这里直接 `delete_unsummarized_timeline`，
+        累计不到提炼阈值就清零，等于记忆永远攒不起来（实机日志里连续出现 removed=4 就是这个）。
+        提炼失败/超时**不影响清空**（照常清、如实记日志）。
         """
         if not self.config.bool("general.enabled", True):
             return False
@@ -604,12 +609,61 @@ class DeepMemoryService:
         if not text or not RESET_COMMAND_RE.match(text):
             return False
         await self.resolve_persona(ctx)
+        saved = await self._summarize_before_reset(ctx)
         removed = self.store.delete_unsummarized_timeline(session_id=ctx.session_id)
         logger.info(
-            "[DeepMemory] 检测到清空上下文指令，已清空未总结缓存: session=%s removed=%s",
-            ctx.session_id, removed,
+            "[DeepMemory] 检测到清空上下文指令，已清空未总结缓存: session=%s removed=%s 清空前已提炼记忆=%s",
+            ctx.session_id, removed, saved,
         )
         return True
+
+    async def _summarize_before_reset(self, ctx: SessionContext) -> int:
+        """清空上下文前抢救一次记忆，返回真正写入的记忆条数（失败返回 -1 以便日志区分）。
+
+        - 开关：`summary.before_reset_enabled`（默认开）
+        - 只在"确实有未总结事件"时才调用（省一次无谓的模型调用）
+        - 整体超时：`summary.before_reset_timeout_seconds`（默认 25），超时/异常都不阻塞清空
+        """
+        if not self.config.bool("summary.before_reset_enabled", True):
+            return 0
+        if not self.config.bool("summary.enabled", True):
+            return 0
+        try:
+            pending = self.store.unsummarized_timeline(
+                session_id=ctx.session_id,
+                persona_id=ctx.persona_id,
+                limit=max(1, self.config.int("summary.max_events_per_summary", 30)),
+            )
+        except Exception as exc:
+            logger.warning("[DeepMemory] 清空前提炼：读取未总结事件失败: %s", exc)
+            return -1
+        if not pending:
+            return 0
+        timeout = max(5, min(120, self.config.int("summary.before_reset_timeout_seconds", 25)))
+        try:
+            result = await asyncio.wait_for(self._summarize_session_inner(ctx), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[DeepMemory] 清空前提炼超时(%ss)，本次未保存：session=%s events=%s",
+                timeout, ctx.session_id, len(pending),
+            )
+            return -1
+        except Exception as exc:
+            logger.warning("[DeepMemory] 清空前提炼失败（不影响清空）: session=%s error=%s", ctx.session_id, exc)
+            return -1
+        if not isinstance(result, dict) or not result.get("ok"):
+            logger.info(
+                "[DeepMemory] 清空前提炼未产出记忆: session=%s reason=%s",
+                ctx.session_id, (result or {}).get("reason") if isinstance(result, dict) else "bad_result",
+            )
+            return 0
+        created = int(result.get("created") or 0)
+        logger.info(
+            "[DeepMemory] 清空前提炼完成: session=%s events=%s 写入记忆=%s%s",
+            ctx.session_id, result.get("events"), created,
+            "（判定无新信息）" if result.get("skipped") else "",
+        )
+        return created
 
     # ================================================================== capture
 

@@ -194,6 +194,18 @@
         "type": "int",
         "default": 120
       },
+      "before_reset_enabled": {
+        "description": "清空上下文前先提炼记忆",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，遇到清空上下文指令（/reset 等）会先把还没提炼的对话落成记忆再清缓存——清空是「别引用刚才那些话」，不等于把这段时间发生的事全忘掉。失败或超时不影响清空本身。"
+      },
+      "before_reset_timeout_seconds": {
+        "description": "清空前提炼超时(秒)",
+        "type": "int",
+        "default": 25,
+        "hint": "抢救记忆最多等多久（5-120）；超时则本次不保存、照常清空。"
+      },
       "summarize_on_bot_idle": {
         "description": "空闲时补总结",
         "hint": "Bot 收到新消息但该会话没有事件可总结时，不触发额外总结调用。",
