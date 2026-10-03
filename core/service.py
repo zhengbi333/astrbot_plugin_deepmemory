@@ -74,7 +74,7 @@ _SYSTEM_NOTICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-PLUGIN_VERSION = "alpha-0.90"
+PLUGIN_VERSION = "alpha-0.91"
 PLUGIN_DISPLAY_NAME = "为你篆刻的历史"
 
 INJECTION_BLOCK_RE = re.compile(
@@ -1467,9 +1467,9 @@ class DeepMemoryService:
             logger.debug("[DeepMemory] 读取 AstrBot 图片理解模型配置失败: %s", exc)
         return ""
 
-    async def _append_timeline(self, ctx: SessionContext, *, role: str, content: str, trigger_summary: bool = True) -> None:
+    async def _append_timeline(self, ctx: SessionContext, *, role: str, content: str, trigger_summary: bool = True) -> str:
         if not content:
-            return
+            return ""
         event = TimelineEvent(
             session_id=ctx.session_id,
             is_system=self._is_system_notice(content),
@@ -1495,6 +1495,7 @@ class DeepMemoryService:
             await self.maybe_summarize_session(ctx)
             if role == "bot" and self.config.bool("general.enabled", True) and self.config.bool("summary.enabled", True):
                 self._summary_settle_tasks[key] = self._spawn(self._settle_summary(ctx, key), "summary_settle")
+        return event.id
 
     async def _settle_summary(self, ctx: SessionContext, key: str) -> None:
         """等机器人拆条回复收齐后重检消息阈值，不依赖空闲扫描开关。"""

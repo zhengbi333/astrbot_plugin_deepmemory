@@ -67,24 +67,9 @@ class DeepMemoryBridge:
         if ctx is None:
             raise ValueError("session_context is required")
         await self._service.resolve_persona(ctx)
-        from .models import TimelineEvent
-
-        event = TimelineEvent(
-            session_id=ctx.session_id,
-            scope=ctx.scope,
-            platform=ctx.platform,
-            user_id=ctx.user_id,
-            user_name=ctx.user_name,
-            group_id=ctx.group_id,
-            group_name=ctx.group_name,
-            bot_id=ctx.bot_id,
-            persona_id=ctx.persona_id,
-            role=clean_role(role),
-            content=content[:2000],
+        return await self._service._append_timeline(
+            ctx, role=clean_role(role), content=content[:2000], trigger_summary=True,
         )
-        self._service.store.add_timeline_event(event)
-        await self._service.maybe_summarize_session(ctx)
-        return event.id
 
     async def record_bot_action(
         self,
