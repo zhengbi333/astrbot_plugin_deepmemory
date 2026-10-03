@@ -492,7 +492,19 @@ class RetrievalEngine:
                 remaining = [r for r in results if r.memory.id not in {c.memory.id for c in top_candidates}]
                 results = top_candidates + remaining
 
-        return results[:top_k]
+        final = results[:top_k]
+        # 0.87：命中即"想起一次"——更新 last_accessed_at / access_count。
+        # 此前 store.touch_memory() 已经实现（UPDATE … access_count=access_count+1），却**从未被调用**，
+        # 于是 access_count 恒为 0、weights.access_weight 这一维永远是 0，
+        # "常被想起的记忆更容易被想起"的拟人特性完全失效（实测：命中后计数 0 → 0）。
+        # 管理视角（admin_read_all，如面板浏览）不计入，避免后台翻看污染权重。
+        if not admin_read_all and final:
+            for r in final:
+                try:
+                    self.store.touch_memory(r.memory.id)
+                except Exception:
+                    pass
+        return final
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
