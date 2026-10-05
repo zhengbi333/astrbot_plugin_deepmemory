@@ -329,6 +329,11 @@ def visibility_filter(record: MemoryRecord, ctx: SessionContext, config: ConfigV
             return False, "private_not_visible_from_group"
         if not ctx.user_id:
             return False, "missing_user"
+        # 平台隔离：记录带平台时必须与上下文一致。
+        # 0.93 说明：历史数据里同一会话可能残留"适配器类型（aiocqhttp）"与
+        # "平台实例标识（阡墨）"两种写法——那由**写入侧统一 + 一次性迁移**解决，
+        # 而不是在这里放宽比较（放宽会让未知上下文读到别的平台的记忆）。
+        # 上游即使没显式传 platform，SessionContext.from_dict 也会从会话前缀推导出实例标识。
         if record.platform and record.platform != ctx.platform:
             return False, "platform_isolation"
         if not record.user_id and record.session_id and record.session_id != ctx.session_id:
@@ -347,6 +352,11 @@ def visibility_filter(record: MemoryRecord, ctx: SessionContext, config: ConfigV
             return False, "group_not_visible_from_private"
         if not ctx.group_id:
             return False, "missing_group"
+        # 平台隔离：记录带平台时必须与上下文一致。
+        # 0.93 说明：历史数据里同一会话可能残留"适配器类型（aiocqhttp）"与
+        # "平台实例标识（阡墨）"两种写法——那由**写入侧统一 + 一次性迁移**解决，
+        # 而不是在这里放宽比较（放宽会让未知上下文读到别的平台的记忆）。
+        # 上游即使没显式传 platform，SessionContext.from_dict 也会从会话前缀推导出实例标识。
         if record.platform and record.platform != ctx.platform:
             return False, "platform_isolation"
         if not record.group_id and record.session_id and record.session_id != ctx.session_id:

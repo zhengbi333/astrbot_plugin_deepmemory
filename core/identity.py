@@ -70,9 +70,19 @@ def normalize_session_fields(
 class IdentityResolver:
     async def resolve_event_context(self, event: Any) -> SessionContext:
         session_id = clean_text(getattr(event, "unified_msg_origin", "") or "", 200)
-        platform = await self._call(event, "get_platform_name")
-        if not platform and session_id and ":" in session_id:
-            platform = session_id.split(":", 1)[0]
+        # 0.93：**平台实例标识优先**（即会话前缀，unified_msg_origin 的第一段）。
+        # 原因有二：
+        #   ① AstrBot 的 get_platform_name() 返回的是**适配器类型**，其源码注释明确写着
+        #      "用户可能会同时运行多个相同类型的平台适配器" —— 用类型做隔离，
+        #      两个同类实例会互相看见（隔离形同虚设），却会挡住按实例名读写的调用方；
+        #   ② storyteller 一侧（build_session_context 等多处）一直用会话前缀作为 platform，
+        #      两边口径必须一致，否则 visibility_filter 会把跨插件读到的记忆静默挡掉。
+        # 适配器类型仅在拿不到会话前缀时兜底。
+        platform = ""
+        if session_id and ":" in session_id:
+            platform = clean_text(session_id.split(":", 1)[0], 80)
+        if not platform:
+            platform = await self._call(event, "get_platform_name")
 
         scope, parsed_target = parse_scope_from_session(session_id)
         group_id = await self._call(event, "get_group_id")

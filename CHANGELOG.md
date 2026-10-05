@@ -2,7 +2,11 @@
 
 完整按版本日志见 [changelogs/](changelogs/) 目录。
 
-## alpha-0.92（当前）
+## alpha-0.93（当前）
+
+- **修 platform 口径不一致导致跨插件记忆被静默挡掉**：0.92 新增的平台隔离方向正确，但 deepmemory 写的是适配器**类型**（aiocqhttp），storyteller 用的是平台**实例标识**（阡墨），严格相等一比对就把跨插件记忆挡了（实测真实库：identity 记忆在 storyteller 上下文下被判 platform_isolation）。改为**统一到实例标识**（会话前缀，且能真正区分同类型多实例）：写入口径统一 + **一次性迁移**（memories/timeline/users 归一，user_key 改写带碰撞合并，无会话行按用户回填，幂等、成功才升版本）；**不放宽比较**（`from_dict` 会从会话前缀推导平台，隔离强度不降）。新用例 21/21、我的 deepmemory 探针 146/146、storyteller 回归 541/541、上一版回归 OK。详见 [changelogs/alpha-0.93.md](changelogs/alpha-0.93.md)。
+
+## alpha-0.92
 
 - **隔离与隐私**：阻止无归属私聊/群记忆泄漏，并严格校验跨平台归属。
 - **桥接与时间线**：保留 `SessionContext` 归属，原子去重并保留同一消息的用户/机器人事件；删除用户时同步清理未总结私聊时间线。

@@ -19,7 +19,7 @@ from .models import (
     utc_now,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _now() -> str:
@@ -170,6 +170,13 @@ class MemoryStore:
                 self.set_setting("schema_version", str(SCHEMA_VERSION))
             self._conn.commit()
         self._migrate_timeline_system_column()
+        try:
+            if int(self.get_setting("schema_version") or 0) < SCHEMA_VERSION:
+                # 迁移成功才升版本号：失败保持旧版本，下次启动会重试（迁移本身幂等）
+                if self._migrate_platform_canonical():
+                    self.set_setting("schema_version", str(SCHEMA_VERSION))
+        except Exception as exc:
+            logger.warning("[DeepMemory] platform 口径迁移检查失败: %s", exc)
 
     def _migrate_timeline_system_column(self) -> None:
         """旧库补充 is_system / kind 列。"""
@@ -183,6 +190,132 @@ class MemoryStore:
                 self._conn.commit()
         except Exception as exc:
             logger.warning("[DeepMemory] 迁移时间线列失败: %s", exc)
+
+    @staticmethod
+    def _session_platform(session_id: str) -> str:
+        """会话前缀 = 平台实例标识（unified_msg_origin 的第一段）；取不到返回空串。"""
+        value = clean_text(session_id, 200)
+        if ":" not in value:
+            return ""
+        prefix = clean_text(value.split(":", 1)[0], 80)
+        return "" if prefix.lower() in ("", "unknown") else prefix
+
+    def _migrate_platform_canonical(self) -> bool:
+        """0.93 一次性迁移：把 platform 统一为**平台实例标识**（会话前缀）。
+
+        背景：deepmemory 早期用 `event.get_platform_name()`（适配器类型，如 aiocqhttp），
+        而 storyteller 用会话前缀（平台实例，如 阡墨）—— 同一会话出现两种写法，
+        检索侧一旦按 platform 比对就会互相看不见。这里统一为实例标识：
+          · memories / timeline：platform = 会话前缀；
+          · users：platform = 会话前缀，且 user_key 从 `类型:用户` 改写为 `实例:用户`
+            （user_key 是主键，改写前先检测碰撞并合并，避免唯一约束报错）。
+        幂等：重复执行无副作用。
+        """
+        try:
+            with self._lock:
+                for table in ("memories", "timeline"):
+                    cur = self._conn.execute(
+                        f"""
+                        UPDATE {table}
+                           SET platform = substr(session_id, 1, instr(session_id, ':') - 1)
+                         WHERE instr(session_id, ':') > 1
+                           AND lower(substr(session_id, 1, instr(session_id, ':') - 1)) NOT IN ('', 'unknown')
+                           AND platform IS NOT substr(session_id, 1, instr(session_id, ':') - 1)
+                        """
+                    )
+                    if cur.rowcount:
+                        logger.info("[DeepMemory] platform 归一：%s 更新 %s 行", table, cur.rowcount)
+
+                rows = [
+                    dict(r)
+                    for r in self._conn.execute(
+                        "SELECT user_key, user_id, platform, persona_id, first_seen FROM users"
+                    )
+                ]
+                migrated = merged = 0
+                for row in rows:
+                    old_key = str(row.get("user_key") or "")
+                    user_id = str(row.get("user_id") or "")
+                    if not user_id:
+                        continue
+                    # 规范化目标取自**他本人的会话前缀**（memories/timeline 里 session_id 的第一段），
+                    # 而不是旧 user_key 的前缀——旧值本身就是适配器类型（aiocqhttp），
+                    # 拿它推只会得到同样的错值（本轮实测踩到过）。
+                    new_platform = ""
+                    for table in ("memories", "timeline"):
+                        found = self._conn.execute(
+                            f"""
+                            SELECT substr(session_id, 1, instr(session_id, ':') - 1) AS p
+                              FROM {table}
+                             WHERE user_id=? AND instr(session_id, ':') > 1
+                             GROUP BY p
+                             ORDER BY COUNT(*) DESC
+                             LIMIT 1
+                            """,
+                            (user_id,),
+                        ).fetchone()
+                        if found and found["p"]:
+                            value = clean_text(found["p"], 80)
+                            if value and value.lower() != "unknown":
+                                new_platform = value
+                                break
+                    if not new_platform:
+                        # 没有任何会话证据 → 保守：沿用旧 key 的前缀，仅补齐 platform 列
+                        new_platform = self._session_platform(old_key)
+                    if not new_platform:
+                        continue
+                    new_key = f"{new_platform}:{user_id}"
+                    if new_key == old_key:
+                        continue
+                    existing = self._conn.execute(
+                        "SELECT user_key, persona_id FROM users WHERE user_key=?", (new_key,)
+                    ).fetchone()
+                    if existing is not None:
+                        # 目标键已存在 → 合并：补上缺失的人格绑定，再删除旧行
+                        if not (existing["persona_id"] or "") and (row.get("persona_id") or ""):
+                            self._conn.execute(
+                                "UPDATE users SET persona_id=? WHERE user_key=?",
+                                (row["persona_id"], new_key),
+                            )
+                        self._conn.execute("DELETE FROM users WHERE user_key=?", (old_key,))
+                        merged += 1
+                    else:
+                        self._conn.execute(
+                            "UPDATE users SET user_key=?, platform=? WHERE user_key=?",
+                            (new_key, new_platform, old_key),
+                        )
+                        migrated += 1
+                if migrated or merged:
+                    logger.info(
+                        "[DeepMemory] platform 归一：users 改写 %s 行、合并 %s 行", migrated, merged
+                    )
+                # 第二遍：没有 session_id 的行推不出会话前缀，按 user_id 用 users 表的规范化值回填
+                # （面板手动创建的记忆常是这种形态），否则它们会与实例标识的读取方互相看不见。
+                for table in ("memories", "timeline"):
+                    cur = self._conn.execute(
+                        f"""
+                        UPDATE {table}
+                           SET platform = (
+                               SELECT u.platform FROM users u
+                                WHERE u.user_id = {table}.user_id AND u.platform != ''
+                                LIMIT 1)
+                         WHERE user_id != ''
+                           AND (session_id IS NULL OR instr(session_id, ':') <= 1)
+                           AND EXISTS (SELECT 1 FROM users u
+                                        WHERE u.user_id = {table}.user_id AND u.platform != '')
+                           AND platform IS NOT (
+                               SELECT u.platform FROM users u
+                                WHERE u.user_id = {table}.user_id AND u.platform != ''
+                                LIMIT 1)
+                        """
+                    )
+                    if cur.rowcount:
+                        logger.info("[DeepMemory] platform 归一：%s 按用户回填 %s 行", table, cur.rowcount)
+                self._conn.commit()
+                return True
+        except Exception as exc:
+            logger.warning("[DeepMemory] platform 归一失败（下次启动重试；检索侧容忍空值）: %s", exc)
+            return False
 
     def close(self) -> None:
         with self._lock:

@@ -1,10 +1,10 @@
-# 为你篆刻的历史
+﻿# 为你篆刻的历史
 
 `astrbot_plugin_deepmemory`（中文名：**为你篆刻的历史**）是面向 AstrBot 的长期记忆中枢插件。它把对话沉淀为结构化长期记忆，并提供记忆分区隔离、用户隔离、混合检索、记忆权重、自然衰减、批量导入导出、手动记忆增删改与可配置的 WebUI 仪表盘。
 
 - 插件名：`astrbot_plugin_deepmemory`
 - 中文名：`为你篆刻的历史`
-- 版本：`alpha-0.92`
+- 版本：`alpha-0.93`
 - AstrBot 版本：`>= 4.22.0`
 - 编码要求：UTF-8
 - 更新日志：见 [changelogs/](changelogs/)（每个版本一个 Markdown 文件）
