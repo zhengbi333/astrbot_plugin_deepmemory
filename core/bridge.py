@@ -63,9 +63,14 @@ class DeepMemoryBridge:
         session_context: SessionContext | dict[str, Any] | None = None,
     ) -> str:
         """把一条可见对话记录进短期时间线（供阶段总结使用），返回事件 ID。"""
-        ctx = session_context if isinstance(session_context, SessionContext) else SessionContext.from_dict(session_context)
-        if ctx is None:
+        if session_context is None:
             raise ValueError("session_context is required")
+        # 即使调用方传入 dataclass，也重新走一次规范化，确保 scope/session_id
+        # 可从 AstrBot 会话键推导，避免 unknown/空会话写入全局时间线。
+        payload = session_context.to_dict() if isinstance(session_context, SessionContext) else session_context
+        ctx = SessionContext.from_dict(payload if isinstance(payload, dict) else None)
+        if not ctx.session_id or ctx.scope == "unknown":
+            raise ValueError("session_context must include a valid session_id")
         await self._service.resolve_persona(ctx)
         return await self._service._append_timeline(
             ctx, role=clean_role(role), content=content[:2000], trigger_summary=True,
@@ -167,6 +172,7 @@ class DeepMemoryBridge:
         lifecycle: str = "active",
     ) -> list[dict[str, Any]]:
         """按会话/用户返回最近记忆（不带检索词）。"""
+        limit = max(1, min(200, int(limit or 10)))
         ctx = session_context if isinstance(session_context, SessionContext) else SessionContext.from_dict(session_context)
         if ctx.session_id and not ctx.persona_id:
             ctx.persona_id = getattr(self._service, "_session_personas", {}).get(ctx.session_id, "")
@@ -200,6 +206,7 @@ class DeepMemoryBridge:
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """返回最近时间线事件（供陪伴插件读取会话上下文）。"""
+        limit = max(1, min(200, int(limit or 20)))
         ctx = session_context if isinstance(session_context, SessionContext) else SessionContext.from_dict(session_context)
         # 空上下文保留管理面板全量视图；仅有用户 ID 不允许退化为全库读取。
         if not ctx.session_id and (ctx.user_id or ctx.group_id):
@@ -245,7 +252,7 @@ class DeepMemoryBridge:
         return True
 
     def list_users(self, limit: int = 50) -> list[dict[str, Any]]:
-        return self._service.store.list_users(limit=limit)
+        return self._service.store.list_users(limit=max(1, min(200, int(limit or 50))))
 
     def get_user(self, user_key: str) -> dict[str, Any] | None:
         return self._service.store.get_user(user_key)

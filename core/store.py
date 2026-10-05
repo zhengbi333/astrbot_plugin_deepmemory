@@ -351,6 +351,8 @@ class MemoryStore:
             self._conn.commit()
 
     def list_users(self, limit: int = 200, offset: int = 0, query: str = "") -> list[dict[str, Any]]:
+        limit = max(0, min(10000, int(limit or 0)))
+        offset = max(0, int(offset or 0))
         with self._lock:
             if query:
                 like = f"%{clean_text(query, 100)}%"
@@ -383,12 +385,26 @@ class MemoryStore:
             user = self._conn.execute("SELECT * FROM users WHERE user_key=?", (user_key,)).fetchone()
             count = 0
             if user:
+                user_id = user["user_id"]
+                platform = user["platform"] or ""
+                platform_clause = ""
+                platform_params: tuple[Any, ...] = ()
+                if platform:
+                    platform_clause = " AND (platform=? OR platform='')"
+                    platform_params = (platform,)
                 count = self._conn.execute(
-                    "SELECT COUNT(*) AS c FROM memories WHERE user_id=? AND scope='private'",
-                    (user["user_id"],),
+                    "SELECT COUNT(*) AS c FROM memories WHERE user_id=? AND scope='private'" + platform_clause,
+                    (user_id, *platform_params),
                 ).fetchone()["c"]
                 self._conn.execute(
-                    "DELETE FROM memories WHERE user_id=? AND scope='private'", (user["user_id"],)
+                    "DELETE FROM memories WHERE user_id=? AND scope='private'" + platform_clause,
+                    (user_id, *platform_params),
+                )
+                # 私聊短期时间线可能尚未被总结；若只删长期记忆，后续总结仍会把
+                # 已删除用户的内容重新写回记忆库，等于绕过用户删除操作。
+                self._conn.execute(
+                    "DELETE FROM timeline WHERE user_id=? AND scope='private'" + platform_clause,
+                    (user_id, *platform_params),
                 )
             self._conn.execute("DELETE FROM users WHERE user_key=?", (user_key,))
             self._conn.execute("DELETE FROM memories_fts WHERE memory_id NOT IN (SELECT id FROM memories)")
@@ -484,6 +500,10 @@ class MemoryStore:
         source: str = "",
         order_by: str = "updated_at DESC",
     ) -> list[MemoryRecord]:
+        # SQLite 的 LIMIT -1 表示不限制行数；外部桥接传入负值时会意外放大
+        # 查询范围，因此在存储层统一限制分页参数。
+        limit = max(0, min(100000, int(limit or 0)))
+        offset = max(0, int(offset or 0))
         clauses: list[str] = []
         params: list[Any] = []
         if query:
@@ -609,6 +629,9 @@ class MemoryStore:
                     pass
             else:
                 setattr(record, key, clean_text(value, 2000) if isinstance(getattr(record, key), str) else value)
+        # 指纹包含内容、人格、作用域及归属字段；这些字段被编辑后必须重算，
+        # 否则去重会把新内容误判为旧内容，或无法合并真正重复的记录。
+        record.content_fingerprint = ""
         record.updated_at = _now()
         self.upsert_memory(record)
         return True
@@ -704,6 +727,7 @@ class MemoryStore:
 
     def fts_search(self, query: str, *, limit: int = 50) -> list[tuple[MemoryRecord, float]]:
         """FTS5 关键词检索，返回 (记录, bm25 得分) 列表。"""
+        limit = max(0, min(100000, int(limit or 0)))
         query = clean_text(query, 500)
         if not query:
             return []
@@ -748,6 +772,7 @@ class MemoryStore:
 
     def like_search(self, query: str, *, limit: int = 50) -> list[MemoryRecord]:
         """多列 LIKE 兜底检索。"""
+        limit = max(0, min(100000, int(limit or 0)))
         query = clean_text(query, 200)
         if not query:
             return []
@@ -863,6 +888,16 @@ class MemoryStore:
         event.occurred_at = event.occurred_at or _now()
         event.content = clean_text(event.content, 4000)
         with self._lock:
+            # timeline_duplicate() 与写入之间存在并发窗口。把去重检查放进同一把
+            # SQLite 连接锁，避免主链、群捕获同时处理同一消息时产生两条事件。
+            if event.session_id and event.message_id:
+                existing = self._conn.execute(
+                    "SELECT id FROM timeline WHERE session_id=? AND message_id=? AND role=? LIMIT 1",
+                    (event.session_id, event.message_id, event.role),
+                ).fetchone()
+                if existing:
+                    event.id = existing["id"]
+                    return event
             self._conn.execute(
                 "INSERT OR REPLACE INTO timeline("
                 "id, session_id, scope, platform, user_id, user_name, group_id, group_name, "
@@ -929,6 +964,8 @@ class MemoryStore:
         return cur.rowcount
 
     def recent_timeline(self, *, limit: int = 30, offset: int = 0, session_id: str = "", scope: str = "", persona_id: str = "") -> list[TimelineEvent]:
+        limit = max(0, min(10000, int(limit or 0)))
+        offset = max(0, int(offset or 0))
         clauses: list[str] = []
         params: list[Any] = []
         if session_id:
@@ -955,6 +992,7 @@ class MemoryStore:
         persona_id: str = "",
         limit: int = 50,
     ) -> list[TimelineEvent]:
+        limit = max(0, min(10000, int(limit or 0)))
         clauses: list[str] = ["summarized=0", "is_system=0"]
         params: list[Any] = []
         if session_id:

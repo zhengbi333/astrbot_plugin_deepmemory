@@ -329,8 +329,14 @@ def visibility_filter(record: MemoryRecord, ctx: SessionContext, config: ConfigV
             return False, "private_not_visible_from_group"
         if not ctx.user_id:
             return False, "missing_user"
+        if record.platform and record.platform != ctx.platform:
+            return False, "platform_isolation"
         if not record.user_id and record.session_id and record.session_id != ctx.session_id:
             return False, "session_mismatch"
+        # 无用户、无会话归属的 private 记忆不能退化成同人格全局记忆。
+        # 这类记录常由面板手动创建或旧版本导入；继续放行会让任意私聊用户读到它。
+        if not record.user_id and not record.session_id:
+            return False, "private_owner_missing"
         if record.user_id and record.user_id != ctx.user_id:
             if config.bool("isolation.cross_user_visible", False):
                 return True, ""
@@ -341,8 +347,13 @@ def visibility_filter(record: MemoryRecord, ctx: SessionContext, config: ConfigV
             return False, "group_not_visible_from_private"
         if not ctx.group_id:
             return False, "missing_group"
+        if record.platform and record.platform != ctx.platform:
+            return False, "platform_isolation"
         if not record.group_id and record.session_id and record.session_id != ctx.session_id:
             return False, "session_mismatch"
+        # 与 private 相同，ownerless group 记忆不能对所有群聊开放。
+        if not record.group_id and not record.session_id:
+            return False, "group_owner_missing"
         if record.group_id and record.group_id != ctx.group_id:
             if config.bool("isolation.cross_group_visible", False):
                 return True, ""

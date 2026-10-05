@@ -74,7 +74,7 @@ _SYSTEM_NOTICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-PLUGIN_VERSION = "alpha-0.91"
+PLUGIN_VERSION = "alpha-0.92"
 PLUGIN_DISPLAY_NAME = "为你篆刻的历史"
 
 INJECTION_BLOCK_RE = re.compile(
@@ -941,7 +941,7 @@ class DeepMemoryService:
         await self._append_timeline(
             ctx=ctx,
             role="bot",
-            content=clean_text(completion, self.config.int("capture.capture_max_chars", 1200)),
+            content=clean_text(completion, max(1, self.config.int("capture.capture_max_chars", 1200))),
         )
 
     async def capture_timeline(
@@ -971,7 +971,7 @@ class DeepMemoryService:
         await self._append_timeline(
             ctx=ctx,
             role=role,
-            content=clean_text(content, self.config.int("capture.capture_max_chars", 1200)),
+            content=clean_text(content, max(1, self.config.int("capture.capture_max_chars", 1200))),
             trigger_summary=trigger_summary,
         )
 
@@ -1398,7 +1398,7 @@ class DeepMemoryService:
                 return ""
             if not doc_path.exists():
                 return ""
-            limit = self.config.int("capture.media_document_max_chars", 20000)
+            limit = max(1, self.config.int("capture.media_document_max_chars", 20000))
             content = doc_path.read_text(encoding="utf-8", errors="replace")[:limit]
             if len(content.strip()) < 20:
                 return ""
@@ -1831,7 +1831,7 @@ class DeepMemoryService:
                     break
         if item is None:
             return {"ok": False, "reason": "bad_llm_output"}
-        max_chars = self.config.int("summary.max_summary_chars", 1200)
+        max_chars = max(1, self.config.int("summary.max_summary_chars", 1200))
         # 无信息总结过滤：LLM 判定本轮无可保留内容时，不写入垃圾记忆，仅标记时间线已总结
         content_text = clean_text(item.get("content"), max_chars)
         summary_text = clean_text(item.get("summary"), 400)
@@ -2264,7 +2264,7 @@ class DeepMemoryService:
         occurred_at: str = "",
         merge_duplicates: bool = True,
     ) -> MemoryRecord:
-        content = clean_text(content, self.config.int("general.max_content_chars", 4000))
+        content = clean_text(content, max(1, self.config.int("general.max_content_chars", 4000)))
         if not content:
             raise ValueError("记忆内容不能为空")
         if ctx is not None:
@@ -2344,8 +2344,6 @@ class DeepMemoryService:
         admin_read_all: bool = False,
     ) -> list[SearchResult]:
         results = await self.retrieval.search(query, ctx, top_k, admin_read_all=admin_read_all)
-        if results and not admin_read_all:
-            self.store.batch_touch_memories([item.memory.id for item in results])
         return results
 
     async def search_with_diagnostics(
@@ -2355,7 +2353,6 @@ class DeepMemoryService:
         top_k: int = 6,
     ) -> tuple[list[SearchResult], list[dict[str, Any]]]:
         results = await self.retrieval.search(query, ctx, top_k)
-        self.store.batch_touch_memories([item.memory.id for item in results])
         return results, []
 
     def compose_injection(self, ctx: SessionContext, results: list[SearchResult], max_chars: int = 1800) -> str:
@@ -2443,8 +2440,6 @@ class DeepMemoryService:
                 "[DeepMemory] 记忆注入成功: session=%s 命中=%s 字数=%s",
                 ctx.session_id, len(results), len(injection),
             )
-        self.store.batch_touch_memories([item.memory.id for item in results])
-
     def _remove_old_injection(self, req: Any) -> None:
         parts = getattr(req, "extra_user_content_parts", None)
         if isinstance(parts, list):
@@ -2681,10 +2676,15 @@ class DeepMemoryService:
             if whitelist and source_plugin not in whitelist:
                 raise PermissionError(f"plugin {source_plugin} not allowed")
         ctx_payload = kwargs.get("ctx") or kwargs.get("session_context")
-        ctx = SessionContext.from_dict(ctx_payload) if isinstance(ctx_payload, dict) else None
+        if isinstance(ctx_payload, SessionContext):
+            ctx = ctx_payload
+        elif isinstance(ctx_payload, dict):
+            ctx = SessionContext.from_dict(ctx_payload)
+        else:
+            ctx = None
         record = await self.add_memory(
             ctx=ctx,
-            content=clean_text(kwargs.get("content"), self.config.int("general.max_content_chars", 4000)),
+            content=clean_text(kwargs.get("content"), max(1, self.config.int("general.max_content_chars", 4000))),
             memory_type=clean_text(kwargs.get("memory_type"), 60) or "fact",
             summary=clean_text(kwargs.get("summary"), 2000),
             tags=kwargs.get("tags"),
@@ -2762,7 +2762,8 @@ class DeepMemoryService:
         records = self.store.list_memories(limit=100000, scope=scope, persona_id=persona_id, lifecycle="")
         users = self.store.list_users(limit=10000)
         user_payload = [dict(item) for item in users]
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # 同一秒内的并发导出不能复用同一个文件名，否则后一个请求会覆盖前一个档案。
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         ext = "jsonl" if format == "jsonl" else "json"
         path = exports_dir / f"deepmemory_export_{stamp}.{ext}"
         payload: Any
@@ -2820,9 +2821,10 @@ class DeepMemoryService:
         if import_file.stat().st_size > 64 * 1024 * 1024:
             raise ValueError("文件超过 64 MiB 限制")
         raw = import_file.read_text(encoding="utf-8", errors="replace")
+        is_jsonl = import_file.suffix.lower() == ".jsonl"
         records: list[MemoryRecord] = []
         errors: list[str] = []
-        if path.endswith(".jsonl"):
+        if is_jsonl:
             for line_no, line in enumerate(raw.splitlines(), start=1):
                 line = line.strip()
                 if not line:
@@ -2875,9 +2877,10 @@ class DeepMemoryService:
         if self.config.bool("maintenance.backup_before_import", True):
             self._create_backup("import")
         raw = Path(path).read_text(encoding="utf-8", errors="replace")
+        is_jsonl = Path(path).suffix.lower() == ".jsonl"
         records: list[MemoryRecord] = []
         imported_users: list[dict] = []
-        if path.endswith(".jsonl"):
+        if is_jsonl:
             lines = raw.splitlines()
             # 首行可能是导出元数据（含用户列表）
             if lines:
@@ -2966,12 +2969,12 @@ class DeepMemoryService:
         return {"ok": True, "batch_id": batch_id, "imported": imported, "skipped": skipped}
 
     def export_backup(self) -> dict[str, Any]:
-        backup_path = self.data_dir / "backups" / f"deepmemory_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        backup_path = self.data_dir / "backups" / f"deepmemory_backup_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
         path = self.store.backup(backup_path)
         return {"ok": True, "path": str(path), "filename": path.name}
 
     def _create_backup(self, reason: str) -> str:
-        backup_path = self.data_dir / "backups" / f"deepmemory_{reason}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        backup_path = self.data_dir / "backups" / f"deepmemory_{reason}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
         self.store.backup(backup_path)
         return str(backup_path)
 
@@ -2999,8 +3002,8 @@ class DeepMemoryService:
         """
         if not self.config.bool("decay.daily_decay_enabled", True):
             return {"ok": False, "reason": "daily decay disabled", "processed": 0}
-        rate = self.config.float("decay.daily_decay_rate_percent", 0.5) / 100.0
-        threshold = self.config.float("decay.decay_importance_threshold", 0.2)
+        rate = min(1.0, max(0.0, self.config.float("decay.daily_decay_rate_percent", 0.5) / 100.0))
+        threshold = max(0.0, min(1.0, self.config.float("decay.decay_importance_threshold", 0.2)))
         if rate <= 0:
             return {"ok": False, "reason": "decay rate is 0", "processed": 0}
         records = self.store.list_memories(limit=20000, lifecycle="active")
@@ -3062,7 +3065,7 @@ class DeepMemoryService:
         candidates = candidates if candidates is not None else self.store.list_decay_candidates(
             after_days=max(1, self.config.int("decay.decay_after_days", 120)),
             idle_days=max(1, self.config.int("decay.decay_idle_days", 60)),
-            max_importance=self.config.float("decay.decay_max_importance", 0.7),
+            max_importance=max(0.0, min(1.0, self.config.float("decay.decay_max_importance", 0.7))),
             max_access_count=max(0, self.config.int("decay.decay_max_access_count", 3)),
             limit=max(1, self.config.int("decay.decay_batch_size", 80)),
         )
@@ -3097,7 +3100,7 @@ class DeepMemoryService:
             )
             payload = await self._llm_json(prompt, ctx=ctx, prefix="decay", fallback_prefix="summary")
             new_memory_id = ""
-            content = clean_text(payload.get("content"), self.config.int("decay.decay_summary_chars", 800)) if isinstance(payload, dict) else ""
+            content = clean_text(payload.get("content"), max(1, self.config.int("decay.decay_summary_chars", 800))) if isinstance(payload, dict) else ""
             if not content:
                 logger.warning("[DeepMemory] 压缩失败，保留原有活跃记忆: session=%s count=%s", ctx.session_id, len(group))
                 continue

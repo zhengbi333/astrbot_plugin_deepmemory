@@ -102,6 +102,22 @@ async def _save_upload(upload: Any, target: Path) -> None:
         await result
 
 
+def _import_path(service: Any, raw_path: Any) -> Path:
+    """限制页面导入只能读取本插件上传目录，避免把任意本地路径当作导入文件。"""
+    text = clean_text(raw_path, 2000)
+    if not text:
+        raise ValueError("path is required")
+    root = (service.data_dir / "imports").resolve()
+    candidate = Path(text).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("导入文件必须位于插件 imports 目录") from exc
+    if not candidate.is_file():
+        raise FileNotFoundError("文件不存在")
+    return candidate
+
+
 def _int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -711,9 +727,10 @@ class DeepMemoryPageApi:
 
     async def import_run(self):
         payload = await _json_body({})
-        path = clean_text(payload.get("path"), 2000)
-        if not path:
-            return await _err("path is required")
+        try:
+            path = str(_import_path(self.service, payload.get("path")))
+        except (ValueError, FileNotFoundError) as exc:
+            return await _err(str(exc))
         persona_mapping = payload.get("persona_mapping")
         if not isinstance(persona_mapping, dict):
             persona_mapping = {}
