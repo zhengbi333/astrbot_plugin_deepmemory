@@ -1,4 +1,4 @@
-﻿# 为你篆刻的历史
+# 为你篆刻的历史
 
 `astrbot_plugin_deepmemory`（中文名：**为你篆刻的历史**）是面向 AstrBot 的长期记忆中枢插件。它把对话沉淀为结构化长期记忆，并提供记忆分区隔离、用户隔离、混合检索、记忆权重、自然衰减、批量导入导出、手动记忆增删改与可配置的 WebUI 仪表盘。
 
@@ -171,3 +171,9 @@ if bridge is not None:
 - **为什么没有注入记忆？** 检查 `injection.enabled`、记忆是否被隔离规则过滤、`top_k` 是否过小、消息是否过短（短回复跳过）。
 - **Rerank 配好了但没用上？** 看日志 `[DeepMemory] 重排完成/失败`；确认 `retrieval.mode=auto` 且 Provider 具备 `rerank()` 能力。
 - **如何清空全部记忆？** 维护页有备份与清空入口（生产环境谨慎使用）。
+
+## 许可
+
+- 本项目采用 **GNU AGPL-3.0**（与 AstrBot 一致）：Copyright (C) 2026 证毕 (zhengbi333)
+- 可自由使用、修改、分发；若通过网络提供服务，需同样以 AGPL-3.0 开放对应源码。
+- 完整条款见仓库根目录 LICENSE；上游 AstrBot：https://github.com/AstrBotDevs/AstrBot
