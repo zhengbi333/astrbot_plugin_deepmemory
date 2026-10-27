@@ -227,6 +227,32 @@ class DeepMemoryBridge:
     async def update_importance(self, memory_id: str, importance: float) -> bool:
         return await self._service.update_importance(memory_id, importance)
 
+    def mark_superseded(self, old_id: str, new_id: str = "") -> bool:
+        """把一条旧记忆标成「已被取代」。**不删**，可恢复，供面板查看与回滚。
+
+        为什么需要：记忆表本来就有 lifecycle / supersedes_id 字段，
+        但从来没人写过 —— 于是「我现在能吃辣了」和「我不吃辣」会同时在库里，
+        检索时两条都出现，她就会说自相矛盾的话。
+        """
+        try:
+            svc = self.service
+            store = getattr(svc, "store", None)
+            if store is None:
+                return False
+            record = store.get_memory(old_id) if hasattr(store, "get_memory") else None
+            if record is None:
+                return False
+            payload = {"lifecycle": "superseded", "updated_at": _now_iso()}
+            if new_id:
+                payload["supersedes_id"] = str(new_id)
+            updater = getattr(store, "update_memory_fields", None)
+            if callable(updater):
+                updater(old_id, **payload)
+                return True
+            return False
+        except Exception:
+            return False
+
     def delete_memory(self, memory_id: str) -> bool:
         return self._service.store.delete_memory(memory_id)
 
