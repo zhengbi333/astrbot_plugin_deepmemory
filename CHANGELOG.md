@@ -3,6 +3,12 @@
 完整按版本日志见 [changelogs/](changelogs/) 目录。
 
 
+
+## alpha-0.95（当前）
+
+- P1-10：把「注入了哪几条记忆」读出来
+- 详见 [changelogs/alpha-0.95.md](changelogs/alpha-0.95.md)。
+
 ## alpha-0.94（当前）
 
 - P1-9：新事实取代旧事实（不删、可恢复）

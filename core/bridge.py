@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .models import SessionContext
@@ -226,6 +227,82 @@ class DeepMemoryBridge:
 
     async def update_importance(self, memory_id: str, importance: float) -> bool:
         return await self._service.update_importance(memory_id, importance)
+
+    def recent_injections(self, limit: int = 10) -> list[dict[str, Any]]:
+        """最近几次「记忆注入」用了哪几条 —— 面板用来看她为什么那样回答。
+
+        `injection_logs` 表一直在记（query / selected_memory_ids / injection_chars），
+        这里把它读出来，并把每条记忆的摘要补上，前端就能显示成可读的列表。
+
+        返回结构：
+          [{created_at, session_id, query, chars, items: [{id, summary, content}]}]
+        """
+        out: list[dict[str, Any]] = []
+        try:
+            svc = self.service
+            store = getattr(svc, "store", None)
+            if store is None:
+                return out
+            # 方法名是 recent_injection_logs（store.py 里现成的），不是 list_*
+            reader = getattr(store, "recent_injection_logs", None)
+            if not callable(reader):
+                return out
+            rows = reader(limit=max(1, min(50, int(limit)))) or []
+        except Exception:
+            return out
+
+        for row in rows:
+            try:
+                data = dict(row) if not isinstance(row, dict) else dict(row)
+            except Exception:
+                continue
+            ids_raw = str(data.get("selected_memory_ids") or "")
+            # 注意：这列存的是 **JSON 数组字符串**（如 '["m1","m2"]'），不是逗号分隔。
+            # 直接按逗号切会得到 ['["m1"', '"m2"]'] 这种带引号括号的脏 id。
+            ids: list[str] = []
+            try:
+                import json as _json
+
+                parsed = _json.loads(ids_raw) if ids_raw.strip() else []
+                if isinstance(parsed, list):
+                    ids = [str(x).strip() for x in parsed if str(x).strip()]
+            except Exception:
+                ids = []
+            if not ids:
+                # 兜底：万一是老数据的逗号分隔写法
+                # 兜底：万一是老数据的逗号分隔写法（用正则清洗，避免手写引号转义出错）
+                ids = [
+                    re.sub(r'[^A-Za-z0-9_\-]', '', x)
+                    for x in ids_raw.replace('，', ',').split(',')
+                    if x.strip()
+                ]
+                ids = [x for x in ids if x]
+            items: list[dict[str, Any]] = []
+            for mid in ids[:12]:
+                summary = ""
+                content = ""
+                try:
+                    rec = store.get_memory(mid)
+                    if isinstance(rec, dict):
+                        summary = str(rec.get("summary") or "")
+                        content = str(rec.get("content") or "")
+                    elif rec is not None:
+                        summary = str(getattr(rec, "summary", "") or "")
+                        content = str(getattr(rec, "content", "") or "")
+                except Exception:
+                    pass
+                items.append({
+                    "id": mid,
+                    "summary": (summary or content)[:80],
+                })
+            out.append({
+                "created_at": str(data.get("created_at") or ""),
+                "session_id": str(data.get("session_id") or ""),
+                "query": str(data.get("query") or "")[:60],
+                "chars": int(data.get("injection_chars") or 0),
+                "items": items,
+            })
+        return out
 
     def mark_superseded(self, old_id: str, new_id: str = "") -> bool:
         """把一条旧记忆标成「已被取代」。**不删**，可恢复，供面板查看与回滚。
