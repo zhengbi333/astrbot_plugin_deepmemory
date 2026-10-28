@@ -7,7 +7,7 @@
 ```sql
 strftime('%s', occurred_at) <= strftime('%s','now') - ?
 ```
-- `strftime()` 返回 **TEXT**（如 `'1783269195'`），而右边 `strftime('%s','now') - ?` 是**数字**（`1788453195`）；
+- `strftime()` 返回 **TEXT**（如 `'10001'`），而右边 `strftime('%s','now') - ?` 是**数字**（`10002`）；
 - SQLite 的类型排序是 NULL < INTEGER/REAL < **TEXT** → `TEXT <= INTEGER` **永远为假**；
 - 后果：**`maintenance.retention_timeline_days` 从未删掉任何一行**，注入日志同样永不清理
   → 长期使用时间线/日志表无限膨胀（你当前 13 条都未总结，所以还没暴露）。
